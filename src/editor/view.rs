@@ -11,10 +11,10 @@ pub struct View {
 }
 
 impl View {
-    pub fn render() -> Result<(), Error> {
+    pub fn render(&self) -> Result<(), Error> {
         let Size { height, .. } = Terminal::size()?;
 
-        for current_row in 1..height {
+        for current_row in 0..height {
             Terminal::clear_line()?;
             if let Some(line) = self.buffer.lines.get(current_row) {
                 Terminal::print(line)?;

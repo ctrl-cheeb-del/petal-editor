@@ -1,5 +1,5 @@
 use core::cmp::min;
-use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
     env,
     io::Error,
@@ -20,6 +20,7 @@ pub struct Editor {
     should_quit: bool,
     location: Location,
     view: View,
+    offset_y: usize,
 }
 
 impl Editor {
@@ -39,6 +40,7 @@ impl Editor {
             should_quit: false,
             location: Location::default(),
             view,
+            offset_y: 0,
         })
     }
     pub fn run(&mut self) {
@@ -63,11 +65,19 @@ impl Editor {
         let Location { mut x, mut y } = self.location;
         let Size { height, width } = Terminal::size().unwrap_or_default();
         match key_code {
-            KeyCode::Up => {
-                y = y.saturating_sub(1);
-            }
             KeyCode::Down => {
-                y = min(height.saturating_sub(1), y.saturating_add(1));
+                if y < height - 1 {
+                    y += 1;
+                } else {
+                    self.offset_y += 1;  // Scroll down
+                }
+            }
+            KeyCode::Up => {
+                if y > 0 {
+                    y -= 1;
+                } else if self.offset_y > 0 {
+                    self.offset_y -= 1;  // Scroll up
+                }
             }
             KeyCode::Left => {
                 x = x.saturating_sub(1);
@@ -98,13 +108,27 @@ impl Editor {
         match event {
             Event::Key(KeyEvent {
                 code,
-                kind: KeyEventKind::Press,
                 modifiers,
                 ..
             }) => match (code, modifiers) {
                 (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                     self.should_quit = true;
-                }
+                },
+                (KeyCode::Char(c), _) => {
+                    self.view.insert_char(self.location.y, self.location.x, c);
+                    self.location.x += 1; // Move cursor right after inserting
+                },
+                (KeyCode::Backspace, _) => {
+                    if self.location.x > 0 {
+                        self.location.x -= 1;
+                        self.view.delete_char(self.location.y, self.location.x);
+                    }
+                },
+                (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                    if let Some(file_name) = env::args().nth(1) {
+                        let _ = self.view.save_buffer(&file_name);
+                    }
+                },
                 (
                     KeyCode::Up
                     | KeyCode::Down
@@ -117,7 +141,7 @@ impl Editor {
                     _,
                 ) => {
                     self.move_point(code);
-                }
+                },
                 _ => {}
             },
             Event::Resize(width_u16, height_u16) => {
@@ -126,13 +150,13 @@ impl Editor {
                 #[allow(clippy::as_conversions)]
                 let width = width_u16 as usize;
                 self.view.resize(Size { height, width });
-            }
+            },
             _ => {}
         }
     }
     fn refresh_screen(&mut self) {
         let _ = Terminal::hide_caret();
-        self.view.render();
+        self.view.render(self.offset_y);
         let _ = Terminal::move_caret_to(Position {
             col: self.location.x,
             row: self.location.y,

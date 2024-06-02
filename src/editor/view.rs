@@ -8,6 +8,7 @@ pub struct View {
     buffer: Buffer,
     needs_redraw: bool,
     size: Size,
+    offset_y: usize,  // Add this line
 }
 
 impl View {
@@ -20,7 +21,8 @@ impl View {
         debug_assert!(result.is_ok(), "Failed to render line");
     }
 
-    pub fn render(&mut self) {
+    pub fn render(&mut self, offset_y: usize) {
+        self.needs_redraw = true; 
         if !self.needs_redraw {
             return;
         }
@@ -32,12 +34,9 @@ impl View {
         let vertical_center = height / 3;
 
         for current_row in 0..height {
-            if let Some(line) = self.buffer.lines.get(current_row) {
-                let truncated_line = if line.len() >= width {
-                    &line[0..width]
-                } else {
-                    line
-                };
+            let buffer_row = current_row + offset_y;  // Use the passed offset_y
+            if let Some(line) = self.buffer.lines.get(buffer_row) {
+                let truncated_line = if line.len() > width { &line[..width] } else { line };
                 Self::render_line(current_row, truncated_line);
             } else if current_row == vertical_center && self.buffer.is_empty() {
                 Self::render_line(current_row, &Self::build_welcome_message(width));
@@ -71,6 +70,22 @@ impl View {
             self.needs_redraw = true;
         }
     }
+
+    pub fn insert_char(&mut self, line: usize, col: usize, c: char) {
+        let actual_line = line + self.offset_y;  // Adjust line index for offset
+        self.buffer.insert_char(actual_line, col, c);
+        self.needs_redraw = true;
+    }
+
+    pub fn delete_char(&mut self, line: usize, col: usize) {
+        let actual_line = line + self.offset_y;  // Adjust line index for offset
+        self.buffer.delete_char(actual_line, col);
+        self.needs_redraw = true;
+    }
+
+    pub fn save_buffer(&self, file_name: &str) -> Result<(), std::io::Error> {
+        self.buffer.save(file_name)
+    }
 }
 
 impl Default for View {
@@ -79,6 +94,7 @@ impl Default for View {
             buffer: Buffer::default(),
             needs_redraw: true,
             size: Terminal::size().unwrap_or_default(),
+            offset_y: 0,  // Initialize offset_y
         }
     }
 }

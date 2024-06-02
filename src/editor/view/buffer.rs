@@ -18,4 +18,23 @@ impl Buffer {
     pub fn is_empty(&self) -> bool{
         self.lines.is_empty()
     }
+
+    pub fn insert_char(&mut self, line: usize, col: usize, c: char) {
+        if let Some(line_content) = self.lines.get_mut(line) {
+            line_content.insert(col, c);
+        }
+    }
+
+    pub fn delete_char(&mut self, line: usize, col: usize) {
+        if let Some(line_content) = self.lines.get_mut(line) {
+            if col < line_content.len() {
+                line_content.remove(col);
+            }
+        }
+    }
+
+    pub fn save(&self, file_name: &str) -> Result<(), Error> {
+        let contents = self.lines.join("\n");
+        std::fs::write(file_name, contents)
+    }
 }

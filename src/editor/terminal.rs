@@ -18,6 +18,15 @@ pub struct Position {
     pub row: usize,
 }
 
+impl Position {
+    pub const fn saturating_sub(self, other: Self) -> Self {
+        Self {
+            row: self.row.saturating_sub(other.row),
+            col: self.col.saturating_sub(other.col),
+        }
+    }
+}
+
 pub struct Terminal;
 
 impl Terminal {
@@ -42,7 +51,7 @@ impl Terminal {
     pub fn clear_line() -> Result<(), Error> {
         Self::queue_command(Clear(ClearType::CurrentLine))?;
         Ok(())
-    }
+    }.
     pub fn move_caret_to(position: Position) -> Result<(), Error> {
         #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
         Self::queue_command(MoveTo(position.col as u16, position.row as u16))?;

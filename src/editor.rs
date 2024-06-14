@@ -1,26 +1,20 @@
-use core::cmp::min;
-use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{read, Event, KeyEvent, KeyEventKind};
 use std::{
     env,
     io::Error,
     panic::{set_hook, take_hook},
 };
+mod editorcommand;
 mod terminal;
 mod view;
-use terminal::{Position, Size, Terminal};
+use terminal::Terminal;
 use view::View;
 
-#[derive(Copy, Clone, Default)]
-struct Location {
-    x: usize,
-    y: usize,
-}
+use editorcommand::EditorCommand;
 
 pub struct Editor {
     should_quit: bool,
-    location: Location,
     view: View,
-    offset_y: usize,
 }
 
 impl Editor {
@@ -38,9 +32,7 @@ impl Editor {
         }
         Ok(Self {
             should_quit: false,
-            location: Location::default(),
             view,
-            offset_y: 0,
         })
     }
     pub fn run(&mut self) {
@@ -61,106 +53,29 @@ impl Editor {
         }
     }
 
-    fn move_point(&mut self, key_code: KeyCode) {
-        let Location { mut x, mut y } = self.location;
-        let Size { height, width } = Terminal::size().unwrap_or_default();
-        match key_code {
-            KeyCode::Down => {
-                if y < height - 1 {
-                    y += 1;
-                } else {
-                    self.offset_y += 1;  // Scroll down
-                }
-            }
-            KeyCode::Up => {
-                if y > 0 {
-                    y -= 1;
-                } else if self.offset_y > 0 {
-                    self.offset_y -= 1;  // Scroll up
-                }
-            }
-            KeyCode::Left => {
-                x = x.saturating_sub(1);
-            }
-            KeyCode::Right => {
-                x = min(width.saturating_sub(1), x.saturating_add(1));
-            }
-            KeyCode::PageUp => {
-                y = 0;
-            }
-            KeyCode::PageDown => {
-                y = height.saturating_sub(1);
-            }
-            KeyCode::Home => {
-                x = 0;
-            }
-            KeyCode::End => {
-                x = width.saturating_sub(1);
-            }
-            _ => (),
-        }
-        self.location = Location { x, y };
-    }
-
-
+    //dont need to pass by reference doesnt matter
     #[allow(clippy::needless_pass_by_value)]
     fn evaluate_event(&mut self, event: Event) {
-        match event {
-            Event::Key(KeyEvent {
-                code,
-                modifiers,
-                ..
-            }) => match (code, modifiers) {
-                (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
+        let should_process = match &event {
+            Event::Key(KeyEvent { kind, .. }) => kind == &KeyEventKind::Press,
+            Event::Resize(_, _) => true,
+            _ => false,
+        };
+
+        if should_process {
+            if let Ok(command) = EditorCommand::try_from(event) {
+                if matches!(command, EditorCommand::Quit) {
                     self.should_quit = true;
-                },
-                (KeyCode::Char(c), _) => {
-                    self.view.insert_char(self.location.y, self.location.x, c);
-                    self.location.x += 1; // Move cursor right after inserting
-                },
-                (KeyCode::Backspace, _) => {
-                    if self.location.x > 0 {
-                        self.location.x -= 1;
-                        self.view.delete_char(self.location.y, self.location.x);
-                    }
-                },
-                (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                    if let Some(file_name) = env::args().nth(1) {
-                        let _ = self.view.save_buffer(&file_name);
-                    }
-                },
-                (
-                    KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::PageDown
-                    | KeyCode::PageUp
-                    | KeyCode::End
-                    | KeyCode::Home,
-                    _,
-                ) => {
-                    self.move_point(code);
-                },
-                _ => {}
-            },
-            Event::Resize(width_u16, height_u16) => {
-                #[allow(clippy::as_conversions)]
-                let height = height_u16 as usize;
-                #[allow(clippy::as_conversions)]
-                let width = width_u16 as usize;
-                self.view.resize(Size { height, width });
-            },
-            _ => {}
+                } else {
+                    self.view.handle_command(command);
+                }
+            }
         }
     }
     fn refresh_screen(&mut self) {
         let _ = Terminal::hide_caret();
-        self.view.render(self.offset_y);
-        let _ = Terminal::move_caret_to(Position {
-            col: self.location.x,
-            row: self.location.y,
-        });
+        self.view.render();
+        let _ = Terminal::move_caret_to(self.view.caret_position());
         let _ = Terminal::show_caret();
         let _ = Terminal::execute();
     }

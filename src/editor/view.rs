@@ -1,28 +1,81 @@
-use super::terminal::{Size, Terminal};
+use std::cmp::min;
+
+use self::line::Line;
+
+use super::{
+    editorcommand::{Direction, EditorCommand},
+    terminal::{Position, Size, Terminal},
+};
 mod buffer;
 use buffer::Buffer;
+mod line;
 const NAME: &str = env!("CARGO_PKG_NAME");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
+#[derive(Copy, Clone, Default)]
+pub struct Location {
+    pub grapheme_index: usize,
+    pub line_index: usize,
+}
 pub struct View {
     buffer: Buffer,
     needs_redraw: bool,
     size: Size,
-    offset_y: usize,  // Add this line
+    text_location: Location,
+    scroll_offset: Position,
 }
 
 impl View {
-    pub fn resize(&mut self, to: Size) {
-        self.size = to;
-        self.needs_redraw = true;
+    pub fn handle_command(&mut self, command: EditorCommand) {
+        match command {
+            EditorCommand::Resize(size) => self.resize(size),
+            EditorCommand::Move(direction) => self.move_text_location(&direction),
+            EditorCommand::Quit => {}
+            EditorCommand::Insert(character) => self.insert_char(character),
+            EditorCommand::Delete => self.delete(),
+            EditorCommand::Backspace => self.backspace(),
+        }
     }
-    fn render_line(at: usize, line_text: &str) {
-        let result = Terminal::print_row(at, line_text);
-        debug_assert!(result.is_ok(), "Failed to render line");
+    pub fn load(&mut self, file_name: &str) {
+        if let Ok(buffer) = Buffer::load(file_name) {
+            self.buffer = buffer;
+            self.needs_redraw = true;
+        }
     }
 
-    pub fn render(&mut self, offset_y: usize) {
-        self.needs_redraw = true; 
+    fn resize(&mut self, to: Size) {
+        self.size = to;
+        self.scroll_text_location_into_view();
+        self.needs_redraw = true;
+    }
+
+    fn backspace(&mut self) {
+        self.move_left();
+        self.delete();
+    }
+    fn delete(&mut self) {
+        self.buffer.delete(self.text_location);
+        self.needs_redraw = true;
+    }
+    fn insert_char(&mut self, character: char) {
+        let old_len = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, Line::grapheme_count);
+        self.buffer.insert_char(character, self.text_location);
+        let new_len = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, Line::grapheme_count);
+        let grapheme_delta = new_len.saturating_sub(old_len);
+        if grapheme_delta > 0 {
+            self.move_right();
+        }
+        self.needs_redraw = true;
+    }
+
+    pub fn render(&mut self) {
         if !self.needs_redraw {
             return;
         }
@@ -30,14 +83,15 @@ impl View {
         if height == 0 || width == 0 {
             return;
         }
+
         #[allow(clippy::integer_division)]
         let vertical_center = height / 3;
-
+        let top = self.scroll_offset.row;
         for current_row in 0..height {
-            let buffer_row = current_row + offset_y;  // Use the passed offset_y
-            if let Some(line) = self.buffer.lines.get(buffer_row) {
-                let truncated_line = if line.len() > width { &line[..width] } else { line };
-                Self::render_line(current_row, truncated_line);
+            if let Some(line) = self.buffer.lines.get(current_row.saturating_add(top)) {
+                let left = self.scroll_offset.col;
+                let right = self.scroll_offset.col.saturating_add(width);
+                Self::render_line(current_row, &line.get_visible_graphemes(left..right));
             } else if current_row == vertical_center && self.buffer.is_empty() {
                 Self::render_line(current_row, &Self::build_welcome_message(width));
             } else {
@@ -47,6 +101,10 @@ impl View {
         self.needs_redraw = false;
     }
 
+    fn render_line(at: usize, line_text: &str) {
+        let result = Terminal::print_row(at, line_text);
+        debug_assert!(result.is_ok(), "Failed to render line");
+    }
     fn build_welcome_message(width: usize) -> String {
         if width == 0 {
             return " ".to_string();
@@ -64,28 +122,126 @@ impl View {
         full_message
     }
 
-    pub fn load(&mut self, file_name: &str) {
-        if let Ok(buffer) = Buffer::load(file_name) {
-            self.buffer = buffer;
+    fn scroll_vertically(&mut self, to: usize) {
+        let Size { height, .. } = self.size;
+        let offset_changed = if to < self.scroll_offset.row {
+            self.scroll_offset.row = to;
+            true
+        } else if to >= self.scroll_offset.row.saturating_add(height) {
+            self.scroll_offset.row = to.saturating_sub(height).saturating_add(1);
+            true
+        } else {
+            false
+        };
+        if offset_changed {
             self.needs_redraw = true;
         }
     }
-
-    pub fn insert_char(&mut self, line: usize, col: usize, c: char) {
-        let actual_line = line + self.offset_y;  // Adjust line index for offset
-        self.buffer.insert_char(actual_line, col, c);
-        self.needs_redraw = true;
+    fn scroll_horizontally(&mut self, to: usize) {
+        let Size { width, .. } = self.size;
+        let offset_changed = if to < self.scroll_offset.col {
+            self.scroll_offset.col = to;
+            true
+        } else if to >= self.scroll_offset.col.saturating_add(width) {
+            self.scroll_offset.col = to.saturating_sub(width).saturating_add(1);
+            true
+        } else {
+            false
+        };
+        if offset_changed {
+            self.needs_redraw = true;
+        }
+    }
+    fn scroll_text_location_into_view(&mut self) {
+        let Position { row, col } = self.text_location_to_position();
+        self.scroll_vertically(row);
+        self.scroll_horizontally(col);
     }
 
-    pub fn delete_char(&mut self, line: usize, col: usize) {
-        let actual_line = line + self.offset_y;  // Adjust line index for offset
-        self.buffer.delete_char(actual_line, col);
-        self.needs_redraw = true;
+
+    pub fn caret_position(&self) -> Position {
+        self.text_location_to_position()
+            .saturating_sub(self.scroll_offset)
     }
 
-    pub fn save_buffer(&self, file_name: &str) -> Result<(), std::io::Error> {
-        self.buffer.save(file_name)
+    fn text_location_to_position(&self) -> Position {
+        let row = self.text_location.line_index;
+        let col = self.buffer.lines.get(row).map_or(0, |line| {
+            line.width_until(self.text_location.grapheme_index)
+        });
+        Position { col, row }
     }
+
+    fn move_text_location(&mut self, direction: &Direction) {
+        let Size { height, .. } = self.size;
+        match direction {
+            Direction::Up => self.move_up(1),
+            Direction::Down => self.move_down(1),
+            Direction::Left => self.move_left(),
+            Direction::Right => self.move_right(),
+            Direction::PageUp => self.move_up(height.saturating_sub(1)),
+            Direction::PageDown => self.move_down(height.saturating_sub(1)),
+            Direction::Home => self.move_to_start_of_line(),
+            Direction::End => self.move_to_end_of_line(),
+        }
+        self.scroll_text_location_into_view();
+    }
+    fn move_up(&mut self, step: usize) {
+        self.text_location.line_index = self.text_location.line_index.saturating_sub(step);
+        self.snap_to_valid_grapheme();
+    }
+    fn move_down(&mut self, step: usize) {
+        self.text_location.line_index = self.text_location.line_index.saturating_add(step);
+        self.snap_to_valid_grapheme();
+        self.snap_to_valid_line();
+    }
+    #[allow(clippy::arithmetic_side_effects)]
+    fn move_right(&mut self) {
+        let line_width = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, Line::grapheme_count);
+        if self.text_location.grapheme_index < line_width {
+            self.text_location.grapheme_index += 1;
+        } else {
+            self.move_to_start_of_line();
+            self.move_down(1);
+        }
+    }
+    #[allow(clippy::arithmetic_side_effects)]
+    fn move_left(&mut self) {
+        if self.text_location.grapheme_index > 0 {
+            self.text_location.grapheme_index -= 1;
+        } else if self.text_location.line_index > 0 {
+            self.move_up(1);
+            self.move_to_end_of_line();
+        }
+    }
+    fn move_to_start_of_line(&mut self) {
+        self.text_location.grapheme_index = 0;
+    }
+    fn move_to_end_of_line(&mut self) {
+        self.text_location.grapheme_index = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, Line::grapheme_count);
+    }
+
+    fn snap_to_valid_grapheme(&mut self) {
+        self.text_location.grapheme_index = self
+            .buffer
+            .lines
+            .get(self.text_location.line_index)
+            .map_or(0, |line| {
+                min(line.grapheme_count(), self.text_location.grapheme_index)
+            });
+    }
+    fn snap_to_valid_line(&mut self) {
+        self.text_location.line_index = min(self.text_location.line_index, self.buffer.height());
+    }
+
 }
 
 impl Default for View {
@@ -94,7 +250,8 @@ impl Default for View {
             buffer: Buffer::default(),
             needs_redraw: true,
             size: Terminal::size().unwrap_or_default(),
-            offset_y: 0,  // Initialize offset_y
+            text_location: Location::default(),
+            scroll_offset: Position::default(),
         }
     }
 }

@@ -53,7 +53,6 @@ impl Editor {
         }
     }
 
-    //dont need to pass by reference doesnt matter
     #[allow(clippy::needless_pass_by_value)]
     fn evaluate_event(&mut self, event: Event) {
         let should_process = match &event {

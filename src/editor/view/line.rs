@@ -92,6 +92,7 @@ impl Line {
             }
             if fragment_end > range.start {
                 if fragment_end > range.end || current_pos < range.start {
+                    // Clip on the right or left
                     result.push('⋯');
                 } else if let Some(char) = fragment.replacement {
                     result.push(char);
